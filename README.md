@@ -1,2 +1,2 @@
-# dcmp
+# dnscodec
 DNS Client Message Parser
