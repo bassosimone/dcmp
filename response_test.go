@@ -366,3 +366,205 @@ func TestResponseExtractValidAnswers(t *testing.T) {
 		})
 	}
 }
+
+func TestParseResponse(t *testing.T) {
+	makeQuery := func(name string, qtype uint16) *dns.Msg {
+		msg := new(dns.Msg)
+		msg.SetQuestion(name, qtype)
+		return msg
+	}
+
+	tests := []struct {
+		name     string
+		query    *dns.Msg
+		makeResp func(*dns.Msg) *dns.Msg
+		expected error
+	}{
+		{
+			name:  "ValidResponse",
+			query: makeQuery("example.com.", dns.TypeA),
+			makeResp: func(query *dns.Msg) *dns.Msg {
+				resp := new(dns.Msg)
+				resp.SetReply(query)
+				resp.Answer = []dns.RR{&dns.A{
+					Hdr: dns.RR_Header{
+						Name:   "example.com.",
+						Rrtype: dns.TypeA,
+						Class:  dns.ClassINET,
+					},
+					A: net.IPv4(127, 0, 0, 1),
+				}}
+				return resp
+			},
+			expected: nil,
+		},
+
+		{
+			name:  "InvalidResponseID",
+			query: makeQuery("example.com.", dns.TypeA),
+			makeResp: func(query *dns.Msg) *dns.Msg {
+				resp := new(dns.Msg)
+				resp.SetReply(query)
+				resp.Id++
+				return resp
+			},
+			expected: ErrInvalidResponse,
+		},
+
+		{
+			name:  "ServerMisbehaving",
+			query: makeQuery("example.com.", dns.TypeA),
+			makeResp: func(query *dns.Msg) *dns.Msg {
+				resp := new(dns.Msg)
+				resp.SetReply(query)
+				resp.Rcode = dns.RcodeRefused
+				return resp
+			},
+			expected: ErrServerMisbehaving,
+		},
+
+		{
+			name:  "NoData",
+			query: makeQuery("example.com.", dns.TypeA),
+			makeResp: func(query *dns.Msg) *dns.Msg {
+				resp := new(dns.Msg)
+				resp.SetReply(query)
+				resp.Authoritative = true
+				resp.RecursionAvailable = true
+				resp.Answer = nil
+				return resp
+			},
+			expected: ErrNoData,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			resp := tt.makeResp(tt.query)
+			_, err := ParseResponse(tt.query, resp)
+			if tt.expected != nil {
+				require.ErrorIs(t, err, tt.expected)
+				return
+			}
+			require.NoError(t, err)
+		})
+	}
+}
+
+func TestResponseRecordsA(t *testing.T) {
+	resp := &Response{
+		ValidRRs: []dns.RR{
+			&dns.A{
+				Hdr: dns.RR_Header{
+					Name:   "example.com.",
+					Rrtype: dns.TypeA,
+					Class:  dns.ClassINET,
+				},
+				A: net.IPv4(127, 0, 0, 1),
+			},
+			&dns.A{
+				Hdr: dns.RR_Header{
+					Name:   "example.com.",
+					Rrtype: dns.TypeA,
+					Class:  dns.ClassINET,
+				},
+				A: net.IPv4(8, 8, 8, 8),
+			},
+			&dns.AAAA{
+				Hdr: dns.RR_Header{
+					Name:   "example.com.",
+					Rrtype: dns.TypeAAAA,
+					Class:  dns.ClassINET,
+				},
+				AAAA: net.ParseIP("2001:db8::1"),
+			},
+		},
+	}
+
+	addrs, err := resp.RecordsA()
+	require.NoError(t, err)
+	require.Equal(t, []string{"127.0.0.1", "8.8.8.8"}, addrs)
+}
+
+func TestResponseRecordsANoData(t *testing.T) {
+	resp := &Response{ValidRRs: []dns.RR{}}
+	addrs, err := resp.RecordsA()
+	require.ErrorIs(t, err, ErrNoData)
+	require.Nil(t, addrs)
+}
+
+func TestResponseRecordsAAAA(t *testing.T) {
+	resp := &Response{
+		ValidRRs: []dns.RR{
+			&dns.AAAA{
+				Hdr: dns.RR_Header{
+					Name:   "example.com.",
+					Rrtype: dns.TypeAAAA,
+					Class:  dns.ClassINET,
+				},
+				AAAA: net.ParseIP("2001:db8::1"),
+			},
+			&dns.A{
+				Hdr: dns.RR_Header{
+					Name:   "example.com.",
+					Rrtype: dns.TypeA,
+					Class:  dns.ClassINET,
+				},
+				A: net.IPv4(127, 0, 0, 1),
+			},
+		},
+	}
+
+	addrs, err := resp.RecordsAAAA()
+	require.NoError(t, err)
+	require.Equal(t, []string{"2001:db8::1"}, addrs)
+}
+
+func TestResponseRecordsAAAANoData(t *testing.T) {
+	resp := &Response{ValidRRs: []dns.RR{}}
+	addrs, err := resp.RecordsAAAA()
+	require.ErrorIs(t, err, ErrNoData)
+	require.Nil(t, addrs)
+}
+
+func TestResponseRecordsCNAME(t *testing.T) {
+	resp := &Response{
+		ValidRRs: []dns.RR{
+			&dns.CNAME{
+				Hdr: dns.RR_Header{
+					Name:   "www.example.com.",
+					Rrtype: dns.TypeCNAME,
+					Class:  dns.ClassINET,
+				},
+				Target: "example.com.",
+			},
+			&dns.CNAME{
+				Hdr: dns.RR_Header{
+					Name:   "example.com.",
+					Rrtype: dns.TypeCNAME,
+					Class:  dns.ClassINET,
+				},
+				Target: "example.net.",
+			},
+			&dns.A{
+				Hdr: dns.RR_Header{
+					Name:   "example.net.",
+					Rrtype: dns.TypeA,
+					Class:  dns.ClassINET,
+				},
+				A: net.IPv4(127, 0, 0, 1),
+			},
+		},
+	}
+
+	cnames, err := resp.RecordsCNAME()
+	require.NoError(t, err)
+	require.Equal(t, []string{"example.com.", "example.net."}, cnames)
+}
+
+func TestResponseRecordsCNAMENoData(t *testing.T) {
+	resp := &Response{ValidRRs: []dns.RR{}}
+	cnames, err := resp.RecordsCNAME()
+	require.ErrorIs(t, err, ErrNoData)
+	require.Nil(t, cnames)
+}

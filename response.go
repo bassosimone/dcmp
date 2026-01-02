@@ -275,13 +275,17 @@ func (r *Response) RecordsAAAA() ([]string, error) {
 	return out, nil
 }
 
-// RecordFirstCNAME returns the first CNAME in the response.
-func (r *Response) RecordFirstCNAME() (string, error) {
+// RecordsCNAME returns all the CNAME records in the response.
+func (r *Response) RecordsCNAME() ([]string, error) {
+	out := make([]string, 0, len(r.ValidRRs))
 	for _, rr := range r.ValidRRs {
 		switch rr := rr.(type) {
 		case *dns.CNAME:
-			return rr.Target, nil
+			out = append(out, rr.Target)
 		}
 	}
-	return "", ErrNoData
+	if len(out) < 1 {
+		return nil, ErrNoData
+	}
+	return out, nil
 }
